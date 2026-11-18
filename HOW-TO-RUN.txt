@@ -1,0 +1,119 @@
+CALIBRATION REGISTER - HOW TO RUN IT ON A WINDOWS PC FOR TESTING
+=================================================================
+
+You only need to do steps 1 to 3 once. After that, use step 4 each time.
+
+
+1. INSTALL NODE.JS (one time)
+-----------------------------
+  a. Go to https://nodejs.org
+  b. Download the "LTS" version for Windows and run the installer.
+     Click Next through it and keep the default options.
+  c. Check it worked: open "Command Prompt" from the Start menu and type:
+
+        node --version
+
+     You should see a version number of v22.13 or higher, e.g. v24.11.0.
+     If it says "not recognized", restart the PC and try again.
+
+
+2. GET THE APP (one time)
+-------------------------
+  a. Go to https://github.com/lrbcloud-maker/tringle
+  b. Click the green "Code" button, then "Download ZIP".
+  c. Right-click the downloaded ZIP and choose "Extract All...".
+     Put it somewhere easy, e.g. Documents\tringle
+
+  (If you use Git you can run "git clone https://github.com/lrbcloud-maker/tringle" instead.)
+
+
+3. INSTALL THE APP'S PARTS (one time)
+-------------------------------------
+  a. Open the extracted folder in File Explorer. It contains server.js and package.json.
+  b. Click in the address bar at the top of the window, type  cmd  and press Enter.
+     A Command Prompt opens in that folder.
+  c. Type this and press Enter:
+
+        npm install
+
+     Wait until it finishes (a minute or two). This only needs an internet connection the first time.
+
+
+4. START THE APP (every time)
+-----------------------------
+  a. Open a Command Prompt in the app folder (as in step 3b) and type:
+
+        npm start
+
+  b. Leave that window open. The app runs as long as it is open.
+  c. Open a web browser and go to:
+
+        http://localhost:3000
+
+  d. The first time, you'll be asked to create the first admin account
+     (your name, email and a password of at least 8 characters).
+
+  To STOP the app: click in the Command Prompt window and press Ctrl + C.
+
+
+5. THINGS TO TRY
+----------------
+  - Register > Add equipment: fill in an item, then print or download its QR label.
+  - Register > Import Excel: upload a calibration report (.xlsx) to fill in an item automatically.
+  - Filters: filter the register by owner, department, type, dates, result and more.
+  - Admin > Users: invite other people and choose their role (Admin, Editor, Viewer).
+  - Admin > Lists: manage the types, owners, departments and manufacturers in the dropdowns.
+  - The sun/moon button at the top switches between light and dark mode.
+
+
+6. TESTING THE QR CODES WITH A PHONE (optional)
+------------------------------------------------
+  - When the app starts, the Command Prompt shows a line like:
+        On your network:   http://192.168.1.20:3000
+    QR codes point to that address.
+  - The phone must be on the SAME Wi-Fi network as the PC.
+  - The first time, Windows may ask whether to allow "Node.js" through the firewall.
+    Tick "Private networks" and click Allow, or the phone won't be able to connect.
+  - These trial QR codes only work while this PC is running the app. Don't print
+    permanent labels until the app is hosted online and the site address is set
+    under Admin > General.
+
+
+7. WHERE THE DATA IS KEPT
+-------------------------
+  - Everything is saved in the "data" folder inside the app folder:
+        data\calibration.db   (the register, users and settings)
+        data\secret.key       (used to protect the saved email password)
+  - To back up, copy the whole "data" folder while the app is stopped.
+  - To START AGAIN WITH AN EMPTY REGISTER, stop the app and delete the "data" folder.
+
+
+8. PROBLEMS?
+------------
+  "npm is not recognized"
+      Node.js isn't installed, or the PC needs a restart after installing it (step 1).
+
+  "EADDRINUSE" or "port 3000 is already in use"
+      The app is already running in another window, or another program uses port 3000.
+      Close the other window, or start on a different port:
+          set PORT=3001
+          npm start
+      then open http://localhost:3001
+
+  Forgotten admin password
+      Another admin can send you a reset link from Admin > Users.
+      If you are the only admin on a test PC, stop the app and delete the "data" folder
+      to start again (this deletes all test data).
+
+  Old .xls Excel files won't import
+      Open them in Excel and use File > Save As > "Excel Workbook (.xlsx)".
+
+
+9. OPTIONAL: RUN THE AUTOMATIC CHECKS
+-------------------------------------
+  In a Command Prompt in the app folder (while the app is NOT running on port 3199):
+
+        npm test
+
+  It uses its own temporary data, so it doesn't touch your register.
+  It should finish with "ALL PASSED".
