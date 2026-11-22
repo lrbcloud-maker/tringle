@@ -259,6 +259,29 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .rename-row { display: flex; gap: 6px; align-items: center; max-width: 460px; }
 .table-edit input.computed-input { background: var(--sunken); color: var(--text-2); }
 
+/* ---------- register grouped by department > owner ---------- */
+.view-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; background: var(--surface); }
+.seg a { padding: 5px 12px; font-size: .86rem; color: var(--text-2); text-decoration: none; border-right: 1px solid var(--line-strong); }
+.seg a:last-child { border-right: 0; }
+.seg a:hover { background: var(--surface-2); color: var(--text); }
+.seg a.active { background: var(--accent); color: var(--accent-text); }
+.view-bar [data-collapse-all] { margin-left: auto; }
+.table-grouped tr.grp td { background: var(--surface-2); }
+.table-grouped tr.grp-dept td { background: var(--sunken); border-top: 1px solid var(--line-strong); padding-top: 9px; padding-bottom: 9px; }
+.table-grouped tr.grp-owner td { padding-top: 6px; padding-bottom: 6px; }
+.table-grouped tr.grp-owner td:nth-child(2) { padding-left: 34px; }
+.table-grouped tbody tr.grp:hover td { background: var(--sunken); }
+.grp-toggle { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; }
+.grp-toggle svg { transition: transform .15s; color: var(--muted); }
+.grp-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.grp-dept .grp-name { font-weight: 650; font-size: .98rem; }
+.grp-owner .grp-name { font-weight: 550; font-size: .9rem; }
+.grp-count { color: var(--muted); font-size: .84rem; margin-left: 10px; }
+.grp-flag { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 3px; font-size: .76rem; font-weight: 600; background: var(--bad-soft); color: var(--bad); }
+.grp-flag.warn { background: var(--warn-soft); color: var(--warn); }
+.grp-hidden { display: none; }
+
 /* ---------- row editors & import ---------- */
 .row-editor { border: 1px solid var(--line); border-radius: 5px; margin-bottom: 10px; background: var(--surface); }
 .row-editor > summary { padding: 10px 14px; cursor: pointer; font-weight: 550; font-size: .93rem; list-style: none; display: flex; gap: 8px; align-items: center; }
@@ -297,20 +320,29 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .two-col { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
 
 /* ---------- labels (always black on white so they scan) ---------- */
+/* Size and text size come from the saved sticker layout (--lw, --lh, --lfs set on .label-stage). */
 .label {
-  display: flex; gap: 4mm; align-items: center; width: 90mm; height: 46mm; padding: 4mm;
+  display: flex; gap: 3mm; align-items: center; width: var(--lw, 90mm); height: var(--lh, 46mm); padding: 3mm;
   background: #fff; color: #000; border: .3mm solid #000; border-radius: 1.5mm; overflow: hidden;
   font-family: Arial, Helvetica, sans-serif; break-inside: avoid; page-break-inside: avoid;
 }
-.label-qr { width: 33mm; height: 33mm; flex: none; background: #fff; }
+/* The QR code fills the height (never more than half the width) and never gets too small to scan. */
+.label-qr { width: max(14mm, min(calc(var(--lh, 46mm) - 6mm), calc(var(--lw, 90mm) * .48))); aspect-ratio: 1; flex: none; background: #fff; }
 .label-qr svg { width: 100%; height: 100%; display: block; }
-.label-text { font-size: 8.5pt; line-height: 1.38; min-width: 0; overflow-wrap: anywhere; }
-.label-text .k { display: inline-block; width: 17mm; color: #555; }
+.label-text { font-size: var(--lfs, 8.5pt); line-height: 1.32; min-width: 0; overflow-wrap: anywhere; }
+.label-text .k { display: inline-block; min-width: 4.3em; color: #555; }
 .label-text .v { font-weight: 600; }
-.label-title { font-weight: 700; font-size: 9.5pt; margin-bottom: 1.2mm; padding-bottom: 1mm; border-bottom: .3mm solid #000; }
-.label-due .v { font-size: 9.5pt; }
-.label-stage { background: var(--sunken); border: 1px solid var(--line); border-radius: 6px; padding: 28px; display: flex; justify-content: center; margin-bottom: 14px; }
-.label-sheet { display: grid; grid-template-columns: repeat(auto-fill, 90mm); gap: 5mm; justify-content: center; }
+.label-title { font-weight: 700; font-size: 1.12em; margin-bottom: 1mm; padding-bottom: .8mm; border-bottom: .3mm solid #000; }
+.label-due .v { font-size: 1.12em; }
+.label-extra { margin-top: .8mm; font-size: .9em; font-style: italic; }
+.label-stage { background: var(--sunken); border: 1px solid var(--line); border-radius: 6px; padding: 28px; display: flex; justify-content: center; align-items: flex-start; margin-bottom: 14px; min-width: 0; overflow-x: auto; }
+.label-sheet { display: grid; grid-template-columns: repeat(auto-fill, var(--lw, 90mm)); gap: 5mm; justify-content: center; width: 100%; }
+.label-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+.label-workspace .label-stage { margin-bottom: 0; }
+.label-editor { position: sticky; top: 72px; margin-bottom: 0; }
+.label-editor .panel-body { gap: 12px; }
+.check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+@media (max-width: 860px) { .label-workspace { grid-template-columns: 1fr; } .label-editor { position: static; } }
 
 /* ---------- admin ---------- */
 .admin { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
@@ -336,7 +368,9 @@ fieldset { border: 0; padding: 0; margin: 0; }
   html, body { background: #fff !important; color: #000 !important; }
   .topbar, .no-print, .alert, .page-head, .back { display: none !important; }
   .container { padding: 0; max-width: none; }
-  .label-stage { background: none; border: 0; padding: 0; justify-content: flex-start; }
+  .label-stage { background: none; border: 0; padding: 0; justify-content: flex-start; overflow: visible; }
+  .label-workspace { display: block; }
+  .label-sheet { justify-content: start; }
 }
 
 /* ---------- small screens ---------- */

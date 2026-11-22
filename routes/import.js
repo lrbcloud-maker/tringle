@@ -80,7 +80,7 @@ router.get('/equipment/import', requirePerm('equipment.edit'), (req, res) => {
 // The parts of an existing item that a new report shouldn't wipe (the report fills in the calibration).
 function baseFrom(eq) {
   if (!eq) return {};
-  const keep = ['type', 'manufacturer', 'serial_no', 'cal_range', 'procedure', 'owner', 'department', 'cal_period', 'contact_email', 'notes'];
+  const keep = ['type', 'manufacturer', 'serial_no', 'cal_range', 'procedure', 'owner', 'department', 'cal_period', 'contact_email', 'notes', 'doc_link'];
   return Object.fromEntries(keep.map((k) => [k, eq[k]]));
 }
 
@@ -281,7 +281,7 @@ router.post('/equipment/import/confirm', requirePerm('equipment.edit'), (req, re
         done.history++;
         continue;
       }
-      eqr.updateEquipment(plan.match, { ...plan.match, ...v, contact_email: plan.match.contact_email, notes: plan.match.notes }, { recalibrated: true, by: req.user.name });
+      eqr.updateEquipment(plan.match, { ...plan.match, ...v, contact_email: plan.match.contact_email, notes: plan.match.notes, doc_link: v.doc_link || plan.match.doc_link }, { recalibrated: true, by: req.user.name });
       done.recal++;
     }
   });

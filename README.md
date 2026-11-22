@@ -31,11 +31,14 @@ npm test
 - **Record new calibration** starts a blank calibration and moves the current certificate, with its readings, into the history.
 - **Import from Excel** (Register → Import Excel): upload calibration reports (.xlsx). Values are found by their labels (REPORT No., CALIBRATION OF, SERIAL NUMBER, CALIBRATED BY, DATE OF CALIBRATION, instruments table, results table, FUNCTIONS TESTED, FINAL REMARKS…). One file fills in the form for you to check. Several files go to a review table. A serial number already in the register becomes a new calibration for that item, and a report that's already recorded is skipped. Text dates like 02/11/2026 are read day-first (UK).
 - Filter the register by every field: owner, department, type, manufacturer, calibrated by, procedure, period, result, certificate / serial / range / remarks text, calibration date range and due-month range. Search covers every field too, and filters carry through to the CSV export.
-- Optional contact email (can receive reminders) and private notes.
+- The register is grouped by **department, then owner**. Each group can be collapsed, and its tick box selects every item in it, which is handy for printing a department's labels. "Single list by due date" switches back to one list. The CSV export follows the same order.
+- Optional contact email (can receive reminders), private notes and a **document link** (e.g. the item's SharePoint folder). The link shows as an "Open documents (SharePoint)" button for logged-in users only.
+- **Download PDF** on each item gives a PDF laid out like its page: status, details, reference instruments, readings, checks, history and the QR code. It contains the same information as the public scan page, never notes, contact email or the document link.
 - Status: *In date*, *Due soon* (configurable, default 30 days), *Overdue*.
 - Search, filter by department or status, export to CSV.
 - Editing the certificate or date offers to keep the previous certificate in the item's history ("record new calibration").
-- Single QR labels (90 × 46 mm), a QR image download, or a sheet of labels for selected items.
+- Single QR labels, a QR image download, or a sheet of labels for selected items.
+- **Editable sticker layout** (on any label page): size (90 × 46, 100 × 50, 70 × 35, 62 × 29, 50 × 30 mm or custom), text size, title, which details appear, and an extra line such as "Do not use after the due date". Changes preview instantly, and text shrinks automatically to fit. Editors can save the layout as the default for every label. Details always come from the record, and the QR code stays black on white.
 
 **Admin** (top bar → Admin, admins only)
 - **Users:** add people by invite link (optionally emailed), set their role, turn reminders on or off, disable, send a password-reset link, or remove. There must always be at least one active admin.

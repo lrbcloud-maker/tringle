@@ -344,6 +344,74 @@ try {
   ok(await has('owner=Travis', ['PG002_02'], ['A-1', 'MC100_01']), 'filter: owner');
   ok(await has('type=Vernier&department=Lab', ['MC100_02'], ['PG002_02', 'A-1']), 'filter: type + department combined');
 
+  // ---------- register grouped by department, then owner ----------
+  r = await alice('/equipment');
+  const deptNames = [...r.text.matchAll(/grp-dept"[\s\S]*?class="grp-name">([^<]*)</g)].map((m) => m[1]);
+  const sortedCI = (arr) => arr.every((v, i) => i === 0 || arr[i - 1].localeCompare(v, undefined, { sensitivity: 'base' }) <= 0);
+  ok(deptNames.length >= 3 && sortedCI(deptNames) && deptNames.includes('QA') && deptNames.includes('Lab'), `register grouped by department, A–Z (${deptNames.join(', ')})`);
+  ok(r.text.includes('grp-owner') && /grp-owner[\s\S]*?class="grp-name">Bob</.test(r.text) && !r.text.includes('<th class="hide-sm">Owner</th>'), 'owners grouped under each department');
+  const labBlock = r.text.split('class="grp-name">Lab<')[1].split('grp-dept')[0];
+  ok(labBlock.includes('>A-1<') && !labBlock.includes('>B-2<'), 'items sit under their own department');
+  ok(/data-select-group="d0"/.test(r.text) && /data-in="d0 d0o0"/.test(r.text), 'group tick boxes and collapsible rows present');
+  r = await alice('/equipment?view=list');
+  ok(!r.text.includes('grp-dept') && r.text.includes('<th class="hide-sm">Owner</th>') && r.text.includes('name="view" value="list"'), 'single-list view still available and remembered by the filters');
+  ok(r.text.includes('href="/equipment?status=overdue&view=list"'), 'status tiles keep the chosen view');
+  r = await alice('/equipment/export.csv');
+  const csvDepts = r.text.trim().split('\r\n').slice(1).map((line) => line.match(/^(?:"[^"]*"|[^,]*),(?:"[^"]*"|[^,]*),("[^"]*"|[^,]*)/)[1].replace(/"/g, ''));
+  ok(sortedCI(csvDepts), 'CSV export follows the grouped order');
+  ok((await alice('/equipment?department=QA')).text.includes('class="grp-name">QA<') && !(await alice('/equipment?department=QA')).text.includes('class="grp-name">Lab<'), 'grouping works with filters');
+
+  // ---------- SharePoint / document link ----------
+  const pgItem = (await alice('/equipment?serial_no=SC357&view=list')).text;
+  const pgPub = pgItem.match(/href="(\/e\/[\w-]+)"/)[1];
+  const pgEdit = await alice(`/equipment/${pgId}/edit`);
+  const formVals = {};
+  for (const m of pgEdit.text.matchAll(/<input type="(?:text|date|number|email|url)"[^>]*name="([a-z_]+)"[^>]*value="([^"]*)"/g)) formVals[m[1]] = m[2].replace(/&amp;/g, '&');
+  for (const m of pgEdit.text.matchAll(/<input[^>]*name="([a-z_]+)"[^>]*role="combobox"/g)) formVals[m[1]] = formVals[m[1]] ?? '';
+  for (const m of pgEdit.text.matchAll(/id="([a-z_]+)" name="\1" value="([^"]*)"[^>]*role="combobox"/g)) formVals[m[1]] = m[2].replace(/&amp;/g, '&');
+  r = await alice(`/equipment/${pgId}/edit`, { form: { ...formVals, doc_link: 'javascript:alert(1)' } });
+  ok(r.status === 400 && r.text.includes('must be a web address'), 'document link must be a web address (javascript: rejected)');
+  const spLink = `https://contoso.sharepoint.com/sites/Quality/Shared%20Documents/Calibration/PG002?${'x'.repeat(400)}&web=1`;
+  r = await alice(`/equipment/${pgId}/edit`, { form: { ...formVals, doc_link: spLink } });
+  ok(r.status === 302, 'long SharePoint link saved');
+  r = await alice(pgPub);
+  ok(r.text.includes(`href="${spLink.replace(/&/g, '&amp;')}"`) && r.text.includes('Open documents (SharePoint)') && r.text.includes('rel="noopener noreferrer"'), 'logged-in page shows "Open documents" link');
+  ok(!(await anon(pgPub)).text.includes('sharepoint.com'), 'public scan page does not show the document link');
+  ok((await alice(`/equipment/${pgId}/recalibrate`)).text.includes('contoso.sharepoint.com'), 'record new calibration keeps the document link');
+  ok((await alice('/equipment/export.csv?serial_no=SC357')).text.includes('contoso.sharepoint.com'), 'document link in CSV export');
+  const rep3b = await makeReport({ cert: 'PG002_03', serial: 'SC3570225210836', date: '15/11/2026' });
+  const rep5 = await makeReport({ cert: 'NEW_01', serial: 'NEW-1', date: '15/11/2026' });
+  r = await alice('/equipment/import', { files: [{ name: 'pg3.xlsx', buffer: rep3b }, { name: 'n.xlsx', buffer: rep5 }] });
+  const df3 = {};
+  for (const m of r.text.matchAll(/name="(data_\d|note_\d|cal_date_\d|owner_\d|department_\d|cal_period_\d|count)" value="([^"]*)"/g)) df3[m[1]] = m[2].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  r = await alice('/equipment/import/confirm', { form: { ...df3, inc_0: '1', inc_1: '1', default_owner: 'X', default_department: 'Lab' } });
+  ok(r.status === 302 && (await alice(pgPub)).text.includes('contoso.sharepoint.com') && (await alice(pgPub)).text.includes('class="eyebrow">PG002_03<'), 'Excel import of a new calibration keeps the document link');
+
+  // ---------- PDF export ----------
+  const pdfRes = await fetch(`${B}${pgPub}/pdf`);
+  const pdfBuf = Buffer.from(await pdfRes.arrayBuffer());
+  ok(pdfRes.status === 200 && pdfRes.headers.get('content-type') === 'application/pdf' && pdfBuf.subarray(0, 5).toString() === '%PDF-' && pdfBuf.length > 5000, 'PDF downloads for anyone with the QR link (same as the page)');
+  ok(/attachment; filename="PG002_03 Vernier\.pdf"/.test(pdfRes.headers.get('content-disposition') || ''), 'PDF has a sensible file name');
+  ok((await anon(pgPub)).text.includes(`href="${pgPub}/pdf"`) && (await alice(pgPub)).text.includes('Download PDF'), 'PDF links on the public and logged-in pages');
+  ok((await fetch(`${B}/e/doesnotexist/pdf`)).status === 404, 'PDF for an unknown item is 404');
+
+  // ---------- editable QR sticker layout ----------
+  r = await alice(`/equipment/${pgId}/label`);
+  ok(r.text.includes('data-label-editor') && r.text.includes('--lw:90mm;--lh:46mm') && /data-lf="cert_no">/.test(r.text) && /data-lf="owner" hidden/.test(r.text), 'label page has the layout editor with the standard layout');
+  r = await alice('/labels/layout', { form: { size: '62x29', text: 'small', title: '', extra: 'Do not use after the due date', fields: ['cert_no', 'due', 'owner'], back: `/equipment/${pgId}/label?new=1` } });
+  ok(r.status === 302 && r.loc === `/equipment/${pgId}/label?layout=saved`, 'layout saved, back to the same label');
+  r = await alice(r.loc);
+  ok(r.text.includes('Sticker layout saved') && r.text.includes('--lw:62mm;--lh:29mm;--lfs:7pt') && /data-lf="owner">/.test(r.text) && /data-lf="serial_no" hidden/.test(r.text), 'saved size, text size and chosen details applied');
+  ok(/data-label-title[^>]*hidden/.test(r.text) && r.text.includes('>Do not use after the due date<'), 'title switched off, extra line shown');
+  ok(/data-lf="due" class="label-due"><span class="k">Due<\/span> <span class="v">Nov 2027</.test(r.text), 'due date still comes from the record');
+  r = await alice(`/labels?ids=${pgId}&ids=${mcId}`);
+  ok(r.text.includes('--lw:62mm') && (r.text.match(/class="label"/g) || []).length === 2, 'bulk label sheet uses the same saved layout');
+  r = await alice('/labels/layout', { form: { size: 'custom', w: '500', h: '5', text: 'huge', fields: ['nonsense'], back: '//evil.example' } });
+  ok(r.loc === '/equipment?layout=saved', 'unsafe "back" address ignored');
+  ok((await alice(`/equipment/${pgId}/label`)).text.includes('--lw:150mm;--lh:20mm;--lfs:8.5pt'), 'custom sizes clamped to sensible limits');
+  r = await alice('/labels/layout', { form: { reset: '1', back: `/equipment/${pgId}/label` } });
+  ok((await alice(`/equipment/${pgId}/label`)).text.includes('--lw:90mm;--lh:46mm'), 'reset returns to the standard sticker');
+
   // ---------- email settings ----------
   const smtpPass = pw();
   r = await alice('/admin/email', { form: { smtp_host: '127.0.0.1', smtp_port: String(SMTP_PORT), smtp_security: 'none', smtp_user: 'mailer', smtp_pass: smtpPass, smtp_from: 'Register <reg@example.com>' } });
@@ -397,6 +465,9 @@ try {
   ok((await bob('/admin/users')).status === 403, 'viewer: no admin');
   ok((await bob('/equipment/import', { files: [{ name: 'x.xlsx', buffer: await makeReport({ cert: 'V-1', serial: 'V-1', date: '01/01/2026' }) }] })).status === 403, 'viewer: cannot import');
   ok((await bob('/admin/lists')).status === 403 && (await bob('/admin/lists/type/add', { form: { value: 'Hack' } })).status === 403, 'viewer: cannot manage lists');
+  ok((await bob('/labels/layout', { form: { size: '50x30' } })).status === 403, 'viewer: cannot change the saved sticker layout');
+  r = await bob(`/equipment/${idA}/label`);
+  ok(r.status === 200 && r.text.includes('data-label-editor') && r.text.includes('Only editors can save') && !r.text.includes('Save as default'), 'viewer: can preview layout changes but not save them');
   ok(!(await bob('/equipment')).text.includes('/equipment/new'), 'viewer: no add button shown');
   ok((await carol('/equipment/new')).status === 200, 'editor: can add');
   ok((await carol(`/equipment/${idA}/delete`, { form: {} })).status === 403, 'editor: cannot delete by default');

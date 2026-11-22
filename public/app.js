@@ -133,13 +133,60 @@
       if (btn) btn.disabled = !n;
     }
     if (all) { all.checked = n && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+    // Group tick boxes show whether all, some or none of their items are ticked.
+    document.querySelectorAll('[data-select-group]').forEach(function (g) {
+      var mine = rowsIn(g.getAttribute('data-select-group'));
+      var on = mine.filter(function (b) { return b.checked; }).length;
+      g.checked = on > 0 && on === mine.length;
+      g.indeterminate = on > 0 && on < mine.length;
+    });
+  }
+  function rowsIn(groupId) {
+    return Array.prototype.filter.call(document.querySelectorAll('[data-select-row]'), function (b) {
+      var tr = b.closest('tr');
+      return (tr.getAttribute('data-in') || '').split(' ').indexOf(groupId) !== -1;
+    });
   }
   if (all) all.addEventListener('change', function () {
     document.querySelectorAll('[data-select-row]').forEach(function (b) { b.checked = all.checked; });
     refreshBulk();
   });
-  document.addEventListener('change', function (e) { if (e.target.matches('[data-select-row]')) refreshBulk(); });
+  document.addEventListener('change', function (e) {
+    if (e.target.matches('[data-select-row]')) refreshBulk();
+    if (e.target.matches('[data-select-group]')) {
+      rowsIn(e.target.getAttribute('data-select-group')).forEach(function (b) { b.checked = e.target.checked; });
+      refreshBulk();
+    }
+  });
   refreshBulk();
+
+  // ---------- register groups (department > owner): collapse and expand ----------
+  var collapsed = {};
+  function applyCollapse() {
+    document.querySelectorAll('tr[data-in]').forEach(function (tr) {
+      var hide = tr.getAttribute('data-in').split(' ').some(function (g) { return collapsed[g]; });
+      tr.classList.toggle('grp-hidden', hide);
+    });
+    document.querySelectorAll('[data-toggle-grp]').forEach(function (b) {
+      b.setAttribute('aria-expanded', collapsed[b.getAttribute('data-toggle-grp')] ? 'false' : 'true');
+    });
+    var ca = document.querySelector('[data-collapse-all]');
+    if (ca) {
+      var depts = document.querySelectorAll('.grp-dept [data-toggle-grp]');
+      var allShut = depts.length && Array.prototype.every.call(depts, function (b) { return collapsed[b.getAttribute('data-toggle-grp')]; });
+      ca.textContent = allShut ? 'Expand all' : 'Collapse all';
+    }
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-toggle-grp]');
+    if (t) { var id = t.getAttribute('data-toggle-grp'); collapsed[id] = !collapsed[id]; applyCollapse(); return; }
+    var ca = e.target.closest('[data-collapse-all]');
+    if (ca) {
+      var shut = ca.textContent === 'Collapse all';
+      document.querySelectorAll('.grp-dept [data-toggle-grp]').forEach(function (b) { collapsed[b.getAttribute('data-toggle-grp')] = shut; });
+      applyCollapse();
+    }
+  });
 
   // ---------- SMTP presets ----------
   var sec = document.getElementById('smtp_security'), port = document.getElementById('smtp_port');
@@ -338,6 +385,58 @@
   document.addEventListener('input', function (e) {
     if (e.target.matches('[data-nominal], [data-measured]')) updateError(e.target.closest('tr'));
   });
+
+  // ---------- stickers: shrink the text until it fits (small stickers or long names) ----------
+  function fitLabels() {
+    var shrunk = false;
+    document.querySelectorAll('.label').forEach(function (lab) {
+      var text = lab.querySelector('.label-text');
+      if (!text) return;
+      text.style.fontSize = '';
+      var size = parseFloat(getComputedStyle(text).fontSize);
+      var cs = getComputedStyle(lab);
+      var room = lab.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      var guard = 0;
+      while (text.scrollHeight > room + 0.5 && size > 6 && guard++ < 40) { // ~4.5pt is the smallest we go
+        size -= 0.5;
+        text.style.fontSize = size + 'px';
+        shrunk = true;
+      }
+    });
+    var note = document.querySelector('[data-fit-note]');
+    if (note) note.hidden = !shrunk;
+  }
+  if (document.querySelector('.label')) {
+    fitLabels();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitLabels);
+    window.addEventListener('beforeprint', fitLabels);
+  }
+
+  // ---------- sticker layout editor: live preview ----------
+  var editor = document.querySelector('[data-label-editor]');
+  if (editor) {
+    var root = document.querySelector('[data-label-root]');
+    var TEXT = { small: 7, normal: 8.5, large: 10 };
+    var clampN = function (v, lo, hi, d) { v = Math.round(Number(v)); return isFinite(v) && v ? Math.min(hi, Math.max(lo, v)) : d; };
+    var previewLabel = function () {
+      var f = editor.elements;
+      var size = f.size.value, w, hgt;
+      editor.querySelector('[data-custom-size]').hidden = size !== 'custom';
+      if (size === 'custom') { w = clampN(f.w.value, 40, 150, 90); hgt = clampN(f.h.value, 20, 100, 46); }
+      else { var p = size.split('x'); w = +p[0]; hgt = +p[1]; }
+      root.style.setProperty('--lw', w + 'mm');
+      root.style.setProperty('--lh', hgt + 'mm');
+      root.style.setProperty('--lfs', TEXT[f.text.value] + 'pt');
+      var chosen = Array.prototype.filter.call(editor.querySelectorAll('[name="fields"]'), function (c) { return c.checked; }).map(function (c) { return c.value; });
+      root.querySelectorAll('[data-lf]').forEach(function (el) { el.hidden = chosen.indexOf(el.getAttribute('data-lf')) === -1 || el.hasAttribute('data-empty'); });
+      root.querySelectorAll('[data-label-title]').forEach(function (el) { el.hidden = !f.showTitle.checked; el.textContent = f.title.value.trim() || el.getAttribute('data-default'); });
+      root.querySelectorAll('[data-label-extra]').forEach(function (el) { var t = f.extra.value.trim(); el.hidden = !t; el.textContent = t; });
+    };
+    editor.addEventListener('input', function () { previewLabel(); fitLabels(); });
+    editor.addEventListener('change', function () { previewLabel(); fitLabels(); });
+    var reset = editor.querySelector('[data-confirm-reset]');
+    if (reset) reset.addEventListener('click', function (e) { if (!window.confirm('Reset the sticker layout to the standard one?')) e.preventDefault(); });
+  }
 
   // Print button
   document.addEventListener('click', function (e) { if (e.target.closest('[data-print]')) window.print(); });

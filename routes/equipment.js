@@ -10,7 +10,9 @@ const {
 } = require('../lib/dates');
 const { h, icon, combo, layout, statusTag, statusOf, alert, pageHead, FIELDS, detailRows, detailTables, soonDays } = require('../lib/views');
 const lists = require('../lib/lists');
-const { field, requirePerm, notFound } = require('../lib/http');
+const { field, requirePerm, notFound, safeNext } = require('../lib/http');
+const label = require('../lib/label');
+const { equipmentPdf } = require('../lib/pdf');
 
 const router = express.Router();
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -66,6 +68,13 @@ function findEquipment(f, { ignoreStatus = false } = {}) {
   return ignoreStatus || !f.status ? rows : rows.filter((e) => e._status === f.status);
 }
 
+// Grouped view order: department, then owner (ignoring letter case), then soonest due.
+const byText = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+function sortGrouped(rows) {
+  return rows.sort((a, b) => byText(a.department, b.department) || byText(a.owner, b.owner) || a._due.localeCompare(b._due) || byText(a.cert_no, b.cert_no));
+}
+const viewOf = (query) => (query.view === 'list' ? 'list' : 'grouped');
+
 const qs = (f, extra = {}) => {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries({ ...f, ...extra })) if (v) p.set(k, v);
@@ -92,24 +101,29 @@ function filterLabel(k, v) {
 router.get('/equipment', requirePerm('equipment.view'), (req, res) => {
   const u = req.user;
   const f = filtersFrom(req.query);
+  const view = viewOf(req.query);
+  const keepView = view === 'list' ? { view: 'list' } : {};
   const base = findEquipment(f, { ignoreStatus: true });
-  const list = f.status ? base.filter((e) => e._status === f.status) : base;
+  let list = f.status ? base.filter((e) => e._status === f.status) : base;
+  if (view === 'grouped') list = sortGrouped([...list]);
   const total = db.prepare('SELECT COUNT(*) c FROM equipment').get().c;
   const counts = { valid: 0, 'due-soon': 0, overdue: 0, unfit: 0 };
   for (const e of base) counts[e._status]++;
   const today = todayStr();
 
   const stat = (key, label) => `
-    <a class="s-${key || 'all'} ${f.status === key ? 'active' : ''}" href="/equipment${qs({ ...f, status: key })}">
+    <a class="s-${key || 'all'} ${f.status === key ? 'active' : ''}" href="/equipment${qs({ ...f, status: key }, keepView)}">
       <span class="n">${key ? counts[key] : base.length}</span><span class="l">${label}</span>
     </a>`;
 
-  const rows = list.map((e) => `
-    <tr>
+  const grouped = view === 'grouped';
+  const COLSPAN = grouped ? 7 : 8;
+  const itemRow = (e, groups = '') => `
+    <tr${groups ? ` data-in="${groups}"` : ''}>
       <td class="sel"><input type="checkbox" name="ids" value="${e.id}" form="bulk" data-select-row aria-label="Select ${h(e.cert_no)}"></td>
       <td class="nowrap"><a class="cell-link mono" href="/e/${e.public_id}">${h(e.cert_no)}</a></td>
       <td>${h(e.type)}<span class="sub mono">S/N ${h(e.serial_no)}</span>${e.manufacturer || e.cal_range ? `<span class="sub">${h([e.manufacturer, e.cal_range].filter(Boolean).join(' · '))}</span>` : ''}</td>
-      <td class="hide-sm">${h(e.owner)}<span class="sub">${h(e.department)}</span></td>
+      ${grouped ? '' : `<td class="hide-sm">${h(e.owner)}<span class="sub">${h(e.department)}</span></td>`}
       <td class="nowrap hide-sm">${formatDate(e.cal_date)}<span class="sub">${h(formatPeriod(e.cal_period).replace(/ \(.*\)/, ''))}</span></td>
       <td class="nowrap">${formatMonth(e._due)}<span class="sub">${relative(e._due, today)}</span></td>
       <td>${statusTag(e, today)}</td>
@@ -117,11 +131,50 @@ router.get('/equipment', requirePerm('equipment.view'), (req, res) => {
         <a class="btn btn-sm btn-quiet" href="/equipment/${e.id}/label" title="QR label">${icon('qr')}<span class="sr">Label</span></a>
         ${u.can('equipment.edit') ? `<a class="btn btn-sm btn-quiet" href="/equipment/${e.id}/edit" title="Edit">${icon('edit')}<span class="sr">Edit</span></a>` : ''}
       </td>
-    </tr>`).join('');
+    </tr>`;
+
+  // A short "2 overdue · 1 due soon" note for a group heading.
+  const attention = (items) => {
+    const n = (s) => items.filter((e) => e._status === s).length;
+    return [[n('overdue'), 'overdue', ''], [n('unfit'), 'not fit', ''], [n('due-soon'), 'due soon', ' warn']].filter(([c]) => c).map(([c, l, k]) => `<span class="grp-flag${k}">${c} ${l}</span>`).join('');
+  };
+  const count = (n) => `${n} item${n === 1 ? '' : 's'}`;
+
+  let rows;
+  if (!grouped) {
+    rows = list.map((e) => itemRow(e)).join('');
+  } else {
+    const depts = [];
+    for (const e of list) {
+      let d = depts.find((x) => byText(x.name, e.department) === 0);
+      if (!d) depts.push(d = { name: e.department, owners: [] });
+      let o = d.owners.find((x) => byText(x.name, e.owner) === 0);
+      if (!o) d.owners.push(o = { name: e.owner, items: [] });
+      o.items.push(e);
+    }
+    rows = depts.map((d, di) => {
+      const dItems = d.owners.flatMap((o) => o.items);
+      const dId = `d${di}`;
+      return `
+      <tr class="grp grp-dept" data-grp="${dId}">
+        <td class="sel"><input type="checkbox" data-select-group="${dId}" aria-label="Select all in ${h(d.name)}"></td>
+        <td colspan="${COLSPAN - 1}"><button type="button" class="grp-toggle" data-toggle-grp="${dId}" aria-expanded="true">${icon('chevron', 14)}<span class="grp-name">${h(d.name || 'No department')}</span></button><span class="grp-count">${count(dItems.length)}</span>${attention(dItems)}</td>
+      </tr>
+      ${d.owners.map((o, oi) => {
+        const oId = `${dId}o${oi}`;
+        return `
+      <tr class="grp grp-owner" data-in="${dId}" data-grp="${oId}">
+        <td class="sel"><input type="checkbox" data-select-group="${oId}" aria-label="Select all for ${h(o.name)}"></td>
+        <td colspan="${COLSPAN - 1}"><button type="button" class="grp-toggle" data-toggle-grp="${oId}" aria-expanded="true">${icon('chevron', 12)}<span class="grp-name">${h(o.name || 'No owner')}</span></button><span class="grp-count">${count(o.items.length)}</span>${attention(o.items)}</td>
+      </tr>
+      ${o.items.map((e) => itemRow(e, `${dId} ${oId}`)).join('')}`;
+      }).join('')}`;
+    }).join('');
+  }
 
   const active = FILTER_KEYS.filter((k) => f[k]);
   const advanced = active.filter((k) => !['q', 'status'].includes(k));
-  const chips = active.map((k) => `<a class="filter-chip" href="/equipment${qs(f, { [k]: '' })}" title="Remove this filter">${h(filterLabel(k, f[k]))}<span aria-hidden="true">×</span></a>`).join('');
+  const chips = active.map((k) => `<a class="filter-chip" href="/equipment${qs(f, { [k]: '', ...keepView })}" title="Remove this filter">${h(filterLabel(k, f[k]))}<span aria-hidden="true">×</span></a>`).join('');
   const sel = (col, label) => {
     let opts;
     if (col === 'result') opts = [...Object.entries(cal.RESULTS), ['none', 'Not recorded']];
@@ -131,7 +184,7 @@ router.get('/equipment', requirePerm('equipment.view'), (req, res) => {
   };
 
   const actions = [
-    u.can('equipment.export') ? `<a class="btn" href="/equipment/export.csv${qs(f)}">${icon('download')} Export CSV</a>` : '',
+    u.can('equipment.export') ? `<a class="btn" href="/equipment/export.csv${qs(f, { view: view === 'list' ? 'list' : '' })}">${icon('download')} Export CSV</a>` : '',
     u.can('equipment.edit') ? `<a class="btn" href="/equipment/import">${icon('upload')} Import Excel</a>` : '',
     u.can('equipment.edit') ? `<a class="btn btn-primary" href="/equipment/new">${icon('plus')} Add equipment</a>` : '',
   ].join('');
@@ -152,6 +205,7 @@ router.get('/equipment', requirePerm('equipment.view'), (req, res) => {
       ${counts.unfit || f.status === 'unfit' ? stat('unfit', 'Not fit for use') : ''}
     </nav>
     <form class="filters-form" method="get" action="/equipment" role="search">
+      ${view === 'list' ? '<input type="hidden" name="view" value="list">' : ''}
       <div class="toolbar">
         <div class="search">${icon('search')}<input type="search" name="q" placeholder="Search every field…" value="${h(f.q)}" aria-label="Search"></div>
         <select name="status" aria-label="Status">
@@ -176,13 +230,21 @@ router.get('/equipment', requirePerm('equipment.view'), (req, res) => {
       </div>
     </form>
     ${chips ? `<div class="chips">${chips}<a class="filter-chip clear" href="/equipment">Clear all</a></div>` : ''}
+    <div class="view-bar">
+      <span class="muted small">Show:</span>
+      <nav class="seg" aria-label="Register layout">
+        <a href="/equipment${qs(f)}" class="${grouped ? 'active' : ''}"${grouped ? ' aria-current="true"' : ''}>By department &amp; owner</a>
+        <a href="/equipment${qs(f, { view: 'list' })}" class="${grouped ? '' : 'active'}"${grouped ? '' : ' aria-current="true"'}>Single list by due date</a>
+      </nav>
+      ${grouped && list.length ? '<button type="button" class="btn btn-sm btn-quiet" data-collapse-all>Collapse all</button>' : ''}
+    </div>
     <section class="panel">
       ${list.length ? `
       <div class="table-wrap">
-        <table class="table">
+        <table class="table ${grouped ? 'table-grouped' : ''}">
           <thead><tr>
             <th class="sel"><input type="checkbox" data-select-all aria-label="Select all"></th>
-            <th>Certificate</th><th>Equipment</th><th class="hide-sm">Owner</th><th class="hide-sm">Calibrated</th><th>Due</th><th>Status</th><th></th>
+            <th>Certificate</th><th>Equipment</th>${grouped ? '' : '<th class="hide-sm">Owner</th>'}<th class="hide-sm">Calibrated</th><th>Due</th><th>Status</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -208,7 +270,8 @@ function csvCell(v) {
 }
 
 router.get('/equipment/export.csv', requirePerm('equipment.export'), (req, res) => {
-  const list = findEquipment(filtersFrom(req.query));
+  let list = findEquipment(filtersFrom(req.query));
+  if (viewOf(req.query) === 'grouped') list = sortGrouped(list); // same order as the register on screen
   const base = site.baseUrl(req);
   const cols = [
     ['Certificate number', (e) => e.cert_no], ['Owner', (e) => e.owner], ['Department', (e) => e.department],
@@ -217,7 +280,7 @@ router.get('/equipment/export.csv', requirePerm('equipment.export'), (req, res) 
     ['Status', (e) => cal.STATUS_LABELS[e._status]], ['Result', (e) => cal.RESULTS[e.result] || ''], ['Calibrated by', (e) => e.calibrated_by],
     ['Procedure', (e) => e.procedure], ['Temperature', (e) => e.temperature], ['Remarks', (e) => e.remarks],
     ['Reference instruments', (e) => cal.parseDetails(e.details).instruments.map((i) => [i.description, i.serial && `S/N ${i.serial}`, i.cert && `cert ${i.cert}`].filter(Boolean).join(' ')).join('; ')],
-    ['Contact email', (e) => e.contact_email], ['Notes', (e) => e.notes], ['QR link', (e) => `${base}/e/${e.public_id}`],
+    ['Contact email', (e) => e.contact_email], ['Notes', (e) => e.notes], ['Document link', (e) => e.doc_link], ['QR link', (e) => `${base}/e/${e.public_id}`],
   ];
   const lines = [cols.map(([n]) => csvCell(n)).join(',')];
   for (const e of list) lines.push(cols.map(([, fn]) => csvCell(fn(e))).join(','));
@@ -240,6 +303,7 @@ function readEquipment(body) {
   v.result = cal.RESULTS[field(body, 'result')] ? field(body, 'result') : '';
   v.contact_email = field(body, 'contact_email').toLowerCase();
   v.notes = field(body, 'notes');
+  v.doc_link = field(body, 'doc_link');
   v.details = JSON.stringify(cal.detailsFromBody(body));
   for (const k of Object.keys(lists.KINDS)) v[k] = lists.canonical(k, v[k]);
   const missing = FIELDS.filter((f) => !v[f.key]).map((f) => f.label.toLowerCase());
@@ -252,11 +316,26 @@ function readEquipment(body) {
   }
   if (v.contact_email && !EMAIL_RE.test(v.contact_email)) return { v, error: 'The contact email doesn\'t look right.' };
   if (v.notes.length > 2000 || v.remarks.length > 2000) return { v, error: 'Notes and remarks can be at most 2000 characters.' };
+  const linkError = docLinkError(v.doc_link);
+  if (linkError) return { v, error: linkError };
   return { v, error: '' };
 }
 
+// The document link (e.g. a SharePoint folder) becomes a clickable link, so only allow real web addresses.
+function docLinkError(link) {
+  if (!link) return '';
+  if (link.length > 2000) return 'The document link is too long (2000 characters at most).';
+  try {
+    const u = new URL(link);
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('bad protocol');
+  } catch {
+    return 'The document link must be a web address starting with https:// (copy it from SharePoint with "Copy link").';
+  }
+  return '';
+}
+
 const COLS = ['public_id', 'cert_no', 'owner', 'department', 'type', 'serial_no', 'cal_date', 'cal_period', 'manufacturer', 'cal_range',
-  'calibrated_by', 'procedure', 'temperature', 'result', 'remarks', 'details', 'source_file', 'contact_email', 'notes', 'created_at', 'updated_at'];
+  'calibrated_by', 'procedure', 'temperature', 'result', 'remarks', 'details', 'source_file', 'contact_email', 'notes', 'doc_link', 'created_at', 'updated_at'];
 
 function insertEquipment(v) {
   const now = Date.now();
@@ -399,6 +478,8 @@ function equipmentForm(req, { mode, values = {}, error = '', notice = '', eq = n
           <div class="grid-2">
             <label class="field"><span>Contact email</span><input type="email" name="contact_email" maxlength="200" value="${h(values.contact_email)}"><span class="hint">Can receive reminder emails about this item.</span></label>
             <label class="field"><span>Notes</span><textarea name="notes" maxlength="2000" rows="2">${h(values.notes)}</textarea><span class="hint">Only visible to logged-in users.</span></label>
+            <label class="field span-2"><span>Document link (SharePoint)</span><input type="url" name="doc_link" maxlength="2000" value="${h(values.doc_link)}" placeholder="https://yourcompany.sharepoint.com/…">
+              <span class="hint">In SharePoint, open the item's folder or certificate, choose "Copy link" and paste it here. Only visible to logged-in users.</span></label>
           </div>
         </div>
       </div>
@@ -497,21 +578,29 @@ router.post('/equipment/:id/delete', requirePerm('equipment.delete'), (req, res)
 });
 
 // ============================================================ QR labels
-async function labelHtml(req, eq) {
-  const svg = await QRCode.toString(scanUrl(req, eq), { type: 'svg', margin: 0, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } });
+const labelHtml = (req, eq, layout) => label.labelHtml(eq, layout, scanUrl(req, eq), site.appName());
+
+// Labels on the left, the sticker layout editor on the right.
+function labelWorkspace(req, labelsHtml, layout, { sheet = false } = {}) {
   return `
-    <div class="label">
-      <div class="label-qr">${svg}</div>
-      <div class="label-text">
-        <div class="label-title">${h(site.appName())}</div>
-        <div><span class="k">Cert no.</span> <span class="v">${h(eq.cert_no)}</span></div>
-        <div><span class="k">Serial</span> <span class="v">${h(eq.serial_no)}</span></div>
-        <div><span class="k">Type</span> ${h(eq.type)}${eq.cal_range ? ` ${h(eq.cal_range)}` : ''}</div>
-        <div><span class="k">Calibrated</span> ${formatDate(eq.cal_date)}</div>
-        <div class="label-due"><span class="k">Due</span> <span class="v">${formatMonth(dueDate(eq.cal_date, eq.cal_period))}</span></div>
-      </div>
+    <div class="label-workspace">
+      <div class="label-stage" data-label-root style="${label.styleVars(layout)}">${sheet ? `<div class="label-sheet">${labelsHtml}</div>` : labelsHtml}</div>
+      ${label.editorHtml(layout, { canSave: req.user.can('equipment.edit'), back: req.originalUrl, appName: site.appName() })}
     </div>`;
 }
+
+router.post('/labels/layout', requirePerm('equipment.edit'), (req, res) => {
+  const b = req.body;
+  const layout = b.reset
+    ? label.saveLayout({})
+    : label.saveLayout({ ...b, showTitle: b.showTitle ? '1' : '0', fields: [].concat(b.fields || []) });
+  audit.log(req.user, 'Changed sticker layout', `${layout.w} × ${layout.h} mm; ${layout.fields.join(', ') || 'no details'}`);
+  // Go back to the page the editor was on (keeps the bulk sheet's chosen items), with a "saved" message.
+  const back = new URL(safeNext(b.back, '/equipment'), 'http://x');
+  back.searchParams.delete('new');
+  back.searchParams.set('layout', 'saved');
+  res.redirect(back.pathname + back.search);
+});
 
 const trialWarning = (req) => (site.isTrialAddress() ? `<div class="alert alert-warn no-print"><strong>Trial address.</strong> These QR codes point to ${h(site.baseUrl(req))}, which only works on this network while this PC is running the app. Set the site address under Admin → General before printing permanent labels.</div>` : '');
 
@@ -519,19 +608,22 @@ router.get('/equipment/:id/label', requirePerm('equipment.view'), async (req, re
   const eq = getEquipment(req.params.id);
   if (!eq) return notFound(req, res);
   const url = scanUrl(req, eq);
+  const lay = label.getLayout();
   res.send(layout({
     req,
     title: `Label ${eq.cert_no}`,
     active: 'register',
+    wide: true,
     body: `
     ${req.query.new ? alert('Equipment saved. Here is its QR label.', 'success') : ''}
+    ${req.query.layout === 'saved' ? alert('Sticker layout saved. It is now used for every label.', 'success') : ''}
     <a class="back no-print" href="/e/${eq.public_id}">${icon('back', 14)} Back to details</a>
     ${pageHead(`QR label <span class="muted mono" style="font-size:.8em;font-weight:500">${h(eq.cert_no)}</span>`, `
       <a class="btn" href="/equipment/${eq.id}/qr.png" download="QR-${h(eq.cert_no.replace(/[^\w.-]+/g, '_'))}.png">${icon('download')} QR image</a>
       <button type="button" class="btn btn-primary" data-print>${icon('printer')} Print</button>`)}
     ${trialWarning(req)}
-    <div class="label-stage">${await labelHtml(req, eq)}</div>
-    <p class="small muted no-print">Scanning opens <a class="mono" href="${h(url)}">${h(url)}</a>. The label is 90 × 46 mm. In the print dialog, set scale to 100%.</p>`,
+    ${labelWorkspace(req, await labelHtml(req, eq, lay), lay)}
+    <p class="small muted no-print">Scanning opens <a class="mono" href="${h(url)}">${h(url)}</a>. In the print dialog, set scale to 100% (or "Actual size").</p>`,
   }));
 });
 
@@ -546,7 +638,8 @@ router.get('/labels', requirePerm('equipment.view'), async (req, res) => {
   const raw = Array.isArray(req.query.ids) ? req.query.ids : String(req.query.ids || '').split(',');
   const ids = [...new Set(raw.map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 500);
   const items = ids.map(getEquipment).filter(Boolean);
-  const labels = (await Promise.all(items.map((eq) => labelHtml(req, eq)))).join('');
+  const lay = label.getLayout();
+  const labels = (await Promise.all(items.map((eq) => labelHtml(req, eq, lay)))).join('');
   res.send(layout({
     req,
     title: 'Print labels',
@@ -556,7 +649,8 @@ router.get('/labels', requirePerm('equipment.view'), async (req, res) => {
     <a class="back no-print" href="/equipment">${icon('back', 14)} Register</a>
     ${pageHead(`Print labels <span class="muted" style="font-size:.8em;font-weight:500">${items.length}</span>`, items.length ? `<button type="button" class="btn btn-primary" data-print>${icon('printer')} Print</button>` : '')}
     ${trialWarning(req)}
-    ${items.length ? `<div class="label-stage"><div class="label-sheet">${labels}</div></div>` : '<section class="panel"><div class="empty">No equipment selected. Tick items on the register first.</div></section>'}`,
+    ${req.query.layout === 'saved' ? alert('Sticker layout saved. It is now used for every label.', 'success') : ''}
+    ${items.length ? labelWorkspace(req, labels, lay, { sheet: true }) : '<section class="panel"><div class="empty">No equipment selected. Tick items on the register first.</div></section>'}`,
   }));
 });
 
@@ -598,7 +692,7 @@ router.get('/e/:publicId', (req, res) => {
       req,
       title: eq.cert_no,
       bare: true,
-      body: `<div class="narrow" style="max-width:640px">${main}${historyPanel}<p class="scan-footer">${h(site.appName())} · checked ${formatDate(todayStr())}</p></div>`,
+      body: `<div class="narrow" style="max-width:640px">${main}${historyPanel}<p class="scan-footer"><a href="/e/${eq.public_id}/pdf">${icon('download', 14)} Download as PDF</a><br>${h(site.appName())} · checked ${formatDate(todayStr())}</p></div>`,
     }));
   }
 
@@ -619,6 +713,8 @@ router.get('/e/:publicId', (req, res) => {
             <a class="btn" href="/equipment/import?id=${eq.id}">${icon('upload')} New calibration from Excel</a>
             <a class="btn" href="/equipment/${eq.id}/edit">${icon('edit')} Edit details</a>` : ''}
             <a class="btn" href="/equipment/${eq.id}/label">${icon('qr')} QR label</a>
+            <a class="btn" href="/e/${eq.public_id}/pdf">${icon('download')} Download PDF</a>
+            ${eq.doc_link ? `<a class="btn" href="${h(eq.doc_link)}" target="_blank" rel="noopener noreferrer">${icon('link')} Open documents (SharePoint)</a>` : ''}
           </div>
         </section>
         <section class="panel">
@@ -636,6 +732,23 @@ router.get('/e/:publicId', (req, res) => {
       </aside>
     </div>`,
   }));
+});
+
+// ---------- PDF of the same page (same access as the page: anyone with the QR link) ----------
+router.get('/e/:publicId/pdf', async (req, res, next) => {
+  const eq = db.prepare('SELECT * FROM equipment WHERE public_id = ?').get(req.params.publicId);
+  if (!eq) return notFound(req, res);
+  try {
+    const history = db.prepare('SELECT * FROM calibration_history WHERE equipment_id = ? ORDER BY cal_date DESC, id DESC').all(eq.id);
+    const doc = await equipmentPdf(eq, { history, scanUrl: scanUrl(req, eq), appName: site.appName() });
+    const name = `${eq.cert_no} ${eq.type}`.replace(/[^\w.\- ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'equipment';
+    res.type('application/pdf');
+    res.set('Content-Disposition', `attachment; filename="${name}.pdf"`);
+    res.set('X-Robots-Tag', 'noindex');
+    doc.pipe(res);
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = { router, readEquipment, insertEquipment, updateEquipment, findBySerial, equipmentForm, getEquipment };
